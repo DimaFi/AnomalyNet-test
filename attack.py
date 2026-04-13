@@ -86,6 +86,51 @@ def print_stats(stats: dict, label: str = ""):
     print()
 
 
+def print_attack_result(name: str, desc: str, stats_before: dict | None, stats_after: dict | None):
+    """Print clear diff: what was detected DURING this specific attack phase."""
+    if not stats_before or not stats_after:
+        return
+
+    b_total  = stats_before.get("uptime_events_total", 0)
+    a_total  = stats_after.get("uptime_events_total", 0)
+    b_labels = stats_before.get("events_by_label", {})
+    a_labels = stats_after.get("events_by_label", {})
+    b_cls    = stats_before.get("events_by_attack_class", {})
+    a_cls    = stats_after.get("events_by_attack_class", {})
+
+    new_total   = a_total - b_total
+    new_normal  = a_labels.get("normal", 0)  - b_labels.get("normal", 0)
+    new_warning = a_labels.get("warning", 0) - b_labels.get("warning", 0)
+    new_anomaly = a_labels.get("anomaly", 0) - b_labels.get("anomaly", 0)
+
+    # Class diff
+    new_cls = {}
+    for cls in set(list(b_cls.keys()) + list(a_cls.keys())):
+        diff = a_cls.get(cls, 0) - b_cls.get(cls, 0)
+        if diff > 0:
+            new_cls[cls] = diff
+
+    detected = new_warning + new_anomaly
+    rate = (detected / new_total * 100) if new_total > 0 else 0
+
+    print(f"\n  ┌─ РЕЗУЛЬТАТ [{name.upper()}] {desc}")
+    print(f"  │  Новых событий  : {new_total}")
+    print(f"  │  Норма          : {new_normal}")
+    print(f"  │  Предупреждение : {new_warning}")
+    print(f"  │  Аномалия       : {new_anomaly}")
+    print(f"  │  Обнаружено     : {detected}/{new_total} ({rate:.0f}%)")
+    if new_cls:
+        cls_str = ", ".join(f"{c}:{n}" for c, n in sorted(new_cls.items(), key=lambda x: -x[1]))
+        print(f"  │  Классы атак    : {cls_str}")
+    else:
+        print(f"  │  Классы атак    : —")
+    if detected > 0:
+        print(f"  └─ {GREEN}[ОБНАРУЖЕНО]{NC}")
+    else:
+        print(f"  └─ {YELLOW}[НЕ ОБНАРУЖЕНО]{NC}")
+    print()
+
+
 # ── Attack functions ──────────────────────────────────────────
 def run_cmd(cmd: list[str], duration: int, label: str):
     log(f"Running {label} for {duration}s...")
@@ -106,25 +151,26 @@ def run_cmd(cmd: list[str], duration: int, label: str):
 
 
 def attack_syn(target: str, duration: int):
-    """SYN flood — should trigger DoS detection"""
+    """SYN flood — should trigger DoS detection.
+    Uses -i u500 (2000 pps) instead of --flood to keep the victim API responsive."""
     run_cmd(
-        ["hping3", "--syn", "-p", "80", "--flood", "-q", target],
+        ["hping3", "--syn", "-p", "80", "-i", "u500", "-q", target],
         duration, "SYN Flood"
     )
 
 
 def attack_udp(target: str, duration: int):
-    """UDP flood — should trigger DoS/DDoS detection"""
+    """UDP flood — should trigger DoS/DDoS detection."""
     run_cmd(
-        ["hping3", "--udp", "-p", "53", "--flood", "-q", target],
+        ["hping3", "--udp", "-p", "53", "-i", "u500", "-q", target],
         duration, "UDP Flood"
     )
 
 
 def attack_icmp(target: str, duration: int):
-    """ICMP flood (ping flood) — should trigger DoS detection"""
+    """ICMP flood (ping flood) — should trigger DoS detection."""
     run_cmd(
-        ["hping3", "--icmp", "--flood", "-q", target],
+        ["hping3", "--icmp", "-i", "u500", "-q", target],
         duration, "ICMP Flood"
     )
 
@@ -275,17 +321,16 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     for name, fn, desc in ATTACK_PLAN:
         header(f"[{name.upper()}] {desc}")
         t_start = datetime.now().isoformat()
+        stats_phase_before = fetch_stats(target, api_port)
         fn(target, duration)
 
-        # Show incremental stats after each attack
-        time.sleep(2)  # Let AnomalyNet process the last flows
-        stats = fetch_stats(target, api_port)
-        if stats:
-            classes = stats.get("events_by_attack_class", {})
-            if classes:
-                print(f"  Detected classes so far: {classes}")
+        # Let AnomalyNet process the last flows
+        time.sleep(3)
+        stats_phase_after = fetch_stats(target, api_port)
+        if stats_phase_after:
             phases.append({"phase": f"after_{name}", "attack": name, "started_at": t_start,
-                           "finished_at": datetime.now().isoformat(), "stats": stats})
+                           "finished_at": datetime.now().isoformat(), "stats": stats_phase_after})
+        print_attack_result(name, desc, stats_phase_before, stats_phase_after)
 
     time.sleep(3)
     stats_after = fetch_stats(target, api_port)
