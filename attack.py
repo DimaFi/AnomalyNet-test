@@ -5,9 +5,9 @@ Run on the ATTACKER VPS to generate traffic toward the VICTIM VPS.
 
 Usage:
     python3 attack.py --target 1.2.3.4 --mode quick
-    python3 attack.py --target 1.2.3.4 --mode syn --duration 30
-    python3 attack.py --target 1.2.3.4 --mode all
-    python3 attack.py --target 1.2.3.4 --mode check   # just check API stats
+    python3 attack.py --target 1.2.3.4 --mode all --reset-victim --victim-key ~/.ssh/id_rsa
+    python3 attack.py --target 1.2.3.4 --mode full --reset-victim --victim-export export.json
+    python3 attack.py --target 1.2.3.4 --mode check
 """
 
 import argparse
@@ -37,6 +37,49 @@ def ok(msg):   print(f"{GREEN}[OK] {msg}{NC}")
 def warn(msg): print(f"{YELLOW}[!!] {msg}{NC}")
 def err(msg):  print(f"{RED}[ERR] {msg}{NC}", file=sys.stderr)
 def header(msg): print(f"\n{BOLD}{msg}{NC}")
+
+
+# ── Victim SSH helpers ────────────────────────────────────────
+def reset_victim_service(target: str, user: str = "root", ssh_port: int = 22,
+                         ssh_key: str | None = None) -> bool:
+    """SSH to victim and restart anomalynet service to reset stats counters."""
+    cmd = ["ssh",
+           "-o", "StrictHostKeyChecking=no",
+           "-o", "ConnectTimeout=10",
+           "-p", str(ssh_port)]
+    if ssh_key:
+        cmd += ["-i", ssh_key]
+    cmd += [f"{user}@{target}",
+            "systemctl restart anomalynet && sleep 4"]
+    log(f"Resetting victim service via SSH ({user}@{target})...")
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=20)
+        if result.returncode == 0:
+            ok("Victim service restarted — counters cleared")
+            return True
+        else:
+            warn(f"SSH reset failed (rc={result.returncode}): {result.stderr.decode().strip()}")
+            return False
+    except subprocess.TimeoutExpired:
+        warn("SSH reset timed out")
+        return False
+    except FileNotFoundError:
+        warn("ssh not found — skipping reset")
+        return False
+
+
+def fetch_victim_export(target: str, port: int = 8000) -> dict | None:
+    """Fetch full event export from victim's /api/export endpoint."""
+    if not HAS_REQUESTS:
+        return None
+    url = f"http://{target}:{port}/api/export"
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        warn(f"Could not fetch victim export: {e}")
+        return None
 
 
 # ── API helpers ───────────────────────────────────────────────
@@ -373,12 +416,17 @@ ATTACK_PLAN = [
 ]
 
 
-def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None):
+def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None,
+            reset_victim: bool = False, victim_user: str = "root",
+            victim_ssh_port: int = 22, victim_ssh_key: str | None = None):
     header(f"Starting full attack sequence → {target}")
-    header(f"Each attack: {duration}s | API port: {api_port}")
+    header(f"Each attack: {duration}s | API port: {api_port}"
+           + (" | reset-victim: ON" if reset_victim else ""))
 
     phases = []
 
+    if reset_victim:
+        reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key)
     stats_before = fetch_stats(target, api_port)
     print_stats(stats_before, "BEFORE ATTACKS")
     if stats_before:
@@ -388,6 +436,8 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     for name, fn, desc in ATTACK_PLAN:
         header(f"[{name.upper()}] {desc}")
         t_start = datetime.now().isoformat()
+        if reset_victim:
+            reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key)
         stats_phase_before = fetch_stats(target, api_port)
         fn(target, duration)
 
@@ -446,7 +496,9 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     return phases
 
 
-def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None):
+def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None,
+             reset_victim: bool = False, victim_user: str = "root",
+             victim_ssh_port: int = 22, victim_ssh_key: str | None = None):
     """Full test: normal baseline → all attacks → normal again → save structured report."""
     header(f"Full test (normal + attacks + normal) → {target}")
     phases = []
@@ -463,7 +515,9 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
                        "finished_at": datetime.now().isoformat(), "stats": stats_normal_before})
 
     # Phase 2: all attacks
-    attack_phases = run_all(target, duration, api_port, save=None)
+    attack_phases = run_all(target, duration, api_port, save=None,
+                            reset_victim=reset_victim, victim_user=victim_user,
+                            victim_ssh_port=victim_ssh_port, victim_ssh_key=victim_ssh_key)
     phases.extend(attack_phases)
 
     # Phase 3: normal traffic again
@@ -513,14 +567,32 @@ def main():
         help="AnomalyNet API port on victim (default: 8000)")
     parser.add_argument("--save", "-s", type=str, default=None,
         help="Save JSON report to file (default: auto-named for --mode full)")
+    parser.add_argument("--reset-victim", action="store_true",
+        help="SSH to victim and restart anomalynet before each attack (clean counters)")
+    parser.add_argument("--victim-user", type=str, default="root",
+        help="SSH user on victim (default: root)")
+    parser.add_argument("--victim-ssh-port", type=int, default=22,
+        help="SSH port on victim (default: 22)")
+    parser.add_argument("--victim-key", type=str, default=None,
+        help="Path to SSH private key for victim (default: system default)")
+    parser.add_argument("--victim-export", type=str, default=None,
+        help="Save full event export from victim /api/export to this file")
     args = parser.parse_args()
+
+    ssh_kwargs = dict(
+        reset_victim=args.reset_victim,
+        victim_user=args.victim_user,
+        victim_ssh_port=args.victim_ssh_port,
+        victim_ssh_key=args.victim_key,
+    )
 
     print()
     print(f"  {'='*44}")
     print(f"  AnomalyNet Attack Simulator")
-    print(f"  Target  : {args.target}")
-    print(f"  Mode    : {args.mode}")
-    print(f"  Time    : {datetime.now().strftime('%H:%M:%S')}")
+    print(f"  Target       : {args.target}")
+    print(f"  Mode         : {args.mode}")
+    print(f"  Reset victim : {'YES (SSH)' if args.reset_victim else 'no'}")
+    print(f"  Time         : {datetime.now().strftime('%H:%M:%S')}")
     print(f"  {'='*44}")
     print()
 
@@ -529,9 +601,8 @@ def main():
         print_stats(stats, "CURRENT")
         if args.save and stats:
             save_report(args.save, [{"phase": "check", "timestamp": datetime.now().isoformat(), "stats": stats}])
-        return
 
-    if args.mode == "normal":
+    elif args.mode == "normal":
         duration = args.duration or 30
         attack_normal(args.target, duration, args.api_port)
         time.sleep(2)
@@ -539,23 +610,37 @@ def main():
         print_stats(stats, "after normal traffic")
         if args.save and stats:
             save_report(args.save, [{"phase": "normal", "timestamp": datetime.now().isoformat(), "stats": stats}])
-    elif args.mode == "quick":
-        duration = args.duration or 10
-        run_all(args.target, duration, args.api_port, save=args.save)
-    elif args.mode == "all":
-        duration = args.duration or 30
-        run_all(args.target, duration, args.api_port, save=args.save)
+
+    elif args.mode in ("quick", "all"):
+        duration = args.duration or (10 if args.mode == "quick" else 30)
+        run_all(args.target, duration, args.api_port, save=args.save, **ssh_kwargs)
+
     elif args.mode == "full":
         duration = args.duration or 30
-        run_full(args.target, duration, args.api_port, save=args.save)
+        run_full(args.target, duration, args.api_port, save=args.save, **ssh_kwargs)
+
     else:
         duration = args.duration or 15
+        if args.reset_victim:
+            reset_victim_service(args.target, args.victim_user,
+                                 args.victim_ssh_port, args.victim_key)
         run_single(args.mode, args.target, duration)
         time.sleep(2)
         stats = fetch_stats(args.target, args.api_port)
         print_stats(stats, f"after {args.mode}")
         if args.save and stats:
             save_report(args.save, [{"phase": args.mode, "timestamp": datetime.now().isoformat(), "stats": stats}])
+
+    # Fetch full victim export if requested
+    if args.victim_export:
+        log(f"Fetching full event export from victim...")
+        export = fetch_victim_export(args.target, args.api_port)
+        if export:
+            with open(args.victim_export, "w", encoding="utf-8") as f:
+                json.dump(export, f, ensure_ascii=False, indent=2)
+            ok(f"Victim export saved → {args.victim_export}")
+        else:
+            warn("Could not fetch victim export")
 
 
 if __name__ == "__main__":
