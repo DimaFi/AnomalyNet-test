@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""
+AnomalyNet Attack Simulator
+Run on the ATTACKER VPS to generate traffic toward the VICTIM VPS.
+
+Usage:
+    python3 attack.py --target 1.2.3.4 --mode quick
+    python3 attack.py --target 1.2.3.4 --mode syn --duration 30
+    python3 attack.py --target 1.2.3.4 --mode all
+    python3 attack.py --target 1.2.3.4 --mode check   # just check API stats
+"""
+
+import argparse
+import subprocess
+import sys
+import time
+import json
+from datetime import datetime
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
+
+# ── Colors ────────────────────────────────────────────────────
+RED    = "\033[0;31m"
+GREEN  = "\033[0;32m"
+CYAN   = "\033[0;36m"
+YELLOW = "\033[1;33m"
+BOLD   = "\033[1m"
+NC     = "\033[0m"
+
+def log(msg):  print(f"{CYAN}>  {msg}{NC}")
+def ok(msg):   print(f"{GREEN}[OK] {msg}{NC}")
+def warn(msg): print(f"{YELLOW}[!!] {msg}{NC}")
+def err(msg):  print(f"{RED}[ERR] {msg}{NC}", file=sys.stderr)
+def header(msg): print(f"\n{BOLD}{msg}{NC}")
+
+
+# ── API helpers ───────────────────────────────────────────────
+def fetch_stats(target: str, port: int = 8000) -> dict | None:
+    if not HAS_REQUESTS:
+        return None
+    try:
+        r = requests.get(f"http://{target}:{port}/api/debug/stats", timeout=5)
+        return r.json()
+    except Exception:
+        return None
+
+
+def print_stats(stats: dict, label: str = ""):
+    if not stats:
+        warn("Could not reach AnomalyNet API")
+        return
+    header(f"=== Stats {label} ===")
+    total = stats.get("uptime_events_total", 0)
+    labels = stats.get("events_by_label", {})
+    classes = stats.get("events_by_attack_class", {})
+    protos = stats.get("events_by_protocol", {})
+
+    print(f"  Total events   : {total}")
+    print(f"  normal         : {labels.get('normal', 0)}")
+    print(f"  warning        : {labels.get('warning', 0)}")
+    print(f"  anomaly        : {labels.get('anomaly', 0)}")
+    print(f"  avg score      : {stats.get('avg_score', 0):.3f}")
+    print(f"  max score      : {stats.get('max_score', 0):.3f}")
+    print(f"  detection mode : {stats.get('detection_mode', '?')}")
+    print(f"  active model   : {stats.get('active_model_id', '?')}")
+
+    if classes:
+        print(f"\n  Attack classes detected:")
+        for cls, cnt in sorted(classes.items(), key=lambda x: -x[1]):
+            print(f"    {cls:<15} {cnt}")
+    if protos:
+        print(f"\n  By protocol:")
+        for p, cnt in sorted(protos.items(), key=lambda x: -x[1]):
+            print(f"    {p:<10} {cnt}")
+
+    top_ips = stats.get("top_src_ips", {})
+    if top_ips:
+        print(f"\n  Top source IPs:")
+        for ip, cnt in list(top_ips.items())[:5]:
+            print(f"    {ip:<20} {cnt}")
+    print()
+
+
+# ── Attack functions ──────────────────────────────────────────
+def run_cmd(cmd: list[str], duration: int, label: str):
+    log(f"Running {label} for {duration}s...")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(duration)
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        ok(f"{label} done")
+    except FileNotFoundError:
+        warn(f"{cmd[0]} not found — skipping {label} (run setup.sh first)")
+    except KeyboardInterrupt:
+        proc.terminate()
+        raise
+
+
+def attack_syn(target: str, duration: int):
+    """SYN flood — should trigger DoS detection"""
+    run_cmd(
+        ["hping3", "--syn", "-p", "80", "--flood", "-q", target],
+        duration, "SYN Flood"
+    )
+
+
+def attack_udp(target: str, duration: int):
+    """UDP flood — should trigger DoS/DDoS detection"""
+    run_cmd(
+        ["hping3", "--udp", "-p", "53", "--flood", "-q", target],
+        duration, "UDP Flood"
+    )
+
+
+def attack_icmp(target: str, duration: int):
+    """ICMP flood (ping flood) — should trigger DoS detection"""
+    run_cmd(
+        ["hping3", "--icmp", "--flood", "-q", target],
+        duration, "ICMP Flood"
+    )
+
+
+def attack_scan(target: str, duration: int):
+    """Port scan — should trigger Recon detection (especially in Advanced mode)"""
+    log("Running Port Scan (nmap SYN scan, top 1000 ports)...")
+    try:
+        result = subprocess.run(
+            ["nmap", "-sS", "-T4", "--top-ports", "1000", "-q", target],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=max(duration, 30)
+        )
+        ok("Port scan done")
+    except FileNotFoundError:
+        warn("nmap not found — skipping scan (run setup.sh first)")
+    except subprocess.TimeoutExpired:
+        ok("Port scan timeout (expected)")
+
+
+def attack_http(target: str, duration: int, port: int = 80):
+    """HTTP flood — many GET requests; should trigger WebAttack/DoS"""
+    log(f"Running HTTP Flood on {target}:{port} for {duration}s...")
+    if not HAS_REQUESTS:
+        warn("requests not installed — skipping HTTP flood (pip3 install requests)")
+        return
+    deadline = time.time() + duration
+    sent = 0
+    while time.time() < deadline:
+        try:
+            requests.get(f"http://{target}:{port}/", timeout=1)
+        except Exception:
+            pass
+        sent += 1
+    ok(f"HTTP flood done ({sent} requests)")
+
+
+def attack_http_api(target: str, duration: int):
+    """HTTP flood against AnomalyNet API port (8000) — generates known HTTP traffic"""
+    attack_http(target, duration, port=8000)
+
+
+def attack_brute(target: str, duration: int):
+    """SSH brute force simulation — should trigger BruteForce detection"""
+    log(f"Running SSH brute force simulation for {duration}s...")
+    if not HAS_REQUESTS:
+        # Fallback: hping3 TCP to port 22
+        run_cmd(
+            ["hping3", "--syn", "-p", "22", "--flood", "-q", target],
+            duration, "SSH BruteForce (SYN)"
+        )
+        return
+
+    # Send many fast TCP connections to port 22
+    import socket
+    deadline = time.time() + duration
+    attempts = 0
+    while time.time() < deadline:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect((target, 22))
+            s.close()
+        except Exception:
+            pass
+        attempts += 1
+    ok(f"Brute force done ({attempts} connection attempts)")
+
+
+# ── Attack plan ───────────────────────────────────────────────
+ATTACK_PLAN = [
+    ("syn",   attack_syn,      "SYN Flood → DoS"),
+    ("udp",   attack_udp,      "UDP Flood → DoS/DDoS"),
+    ("icmp",  attack_icmp,     "ICMP Flood → DoS"),
+    ("scan",  attack_scan,     "Port Scan → Recon (Advanced mode)"),
+    ("http",  attack_http_api, "HTTP Flood → WebAttack"),
+    ("brute", attack_brute,    "SSH Brute → BruteForce"),
+]
+
+
+def run_all(target: str, duration: int, api_port: int = 8000):
+    header(f"Starting full attack sequence → {target}")
+    header(f"Each attack: {duration}s | API port: {api_port}")
+
+    stats_before = fetch_stats(target, api_port)
+    print_stats(stats_before, "BEFORE ATTACKS")
+
+    for name, fn, desc in ATTACK_PLAN:
+        header(f"[{name.upper()}] {desc}")
+        fn(target, duration)
+
+        # Show incremental stats after each attack
+        time.sleep(2)  # Let AnomalyNet process the last flows
+        stats = fetch_stats(target, api_port)
+        if stats:
+            classes = stats.get("events_by_attack_class", {})
+            if classes:
+                print(f"  Detected classes so far: {classes}")
+
+    time.sleep(3)
+    stats_after = fetch_stats(target, api_port)
+    print_stats(stats_after, "AFTER ALL ATTACKS")
+
+    # Summary
+    header("=== SUMMARY ===")
+    if stats_before and stats_after:
+        before_anomalies = stats_before.get("events_by_label", {}).get("anomaly", 0)
+        after_anomalies  = stats_after.get("events_by_label", {}).get("anomaly", 0)
+        new_anomalies    = after_anomalies - before_anomalies
+        before_total     = stats_before.get("uptime_events_total", 0)
+        after_total      = stats_after.get("uptime_events_total", 0)
+        new_total        = after_total - before_total
+
+        print(f"  New events processed : {new_total}")
+        print(f"  New anomalies        : {new_anomalies}")
+        classes_after = stats_after.get("events_by_attack_class", {})
+        if classes_after:
+            print(f"  Attack classes seen  : {', '.join(classes_after.keys())}")
+        print()
+
+        if new_anomalies > 0:
+            ok("AnomalyNet detected attacks!")
+        else:
+            warn("No anomalies detected — check that capture is running and mode is correct")
+
+
+def run_single(name: str, target: str, duration: int):
+    fn = None
+    for aname, afn, _ in ATTACK_PLAN:
+        if aname == name:
+            fn = afn
+            break
+    if fn is None:
+        err(f"Unknown attack: {name}. Choose: {[a[0] for a in ATTACK_PLAN]}")
+        sys.exit(1)
+    fn(target, duration)
+
+
+# ── Main ──────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(
+        description="AnomalyNet Attack Simulator — run on the ATTACKER VPS"
+    )
+    parser.add_argument("--target", "-t", required=True, help="Victim VPS IP address")
+    parser.add_argument("--mode", "-m", default="quick",
+        choices=["quick", "all", "check", "syn", "udp", "icmp", "scan", "http", "brute"],
+        help="Attack mode (default: quick)")
+    parser.add_argument("--duration", "-d", type=int, default=None,
+        help="Duration per attack in seconds (default: 10 for quick, 30 for all)")
+    parser.add_argument("--api-port", type=int, default=8000,
+        help="AnomalyNet API port on victim (default: 8000)")
+    args = parser.parse_args()
+
+    print()
+    print(f"  {'='*44}")
+    print(f"  AnomalyNet Attack Simulator")
+    print(f"  Target  : {args.target}")
+    print(f"  Mode    : {args.mode}")
+    print(f"  Time    : {datetime.now().strftime('%H:%M:%S')}")
+    print(f"  {'='*44}")
+    print()
+
+    if args.mode == "check":
+        stats = fetch_stats(args.target, args.api_port)
+        print_stats(stats, "CURRENT")
+        return
+
+    if args.mode == "quick":
+        duration = args.duration or 10
+        run_all(args.target, duration, args.api_port)
+    elif args.mode == "all":
+        duration = args.duration or 30
+        run_all(args.target, duration, args.api_port)
+    else:
+        duration = args.duration or 15
+        run_single(args.mode, args.target, duration)
+        time.sleep(2)
+        stats = fetch_stats(args.target, args.api_port)
+        print_stats(stats, f"after {args.mode}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}Interrupted.{NC}")
+        sys.exit(0)
