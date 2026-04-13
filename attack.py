@@ -194,6 +194,62 @@ def attack_brute(target: str, duration: int):
     ok(f"Brute force done ({attempts} connection attempts)")
 
 
+def attack_normal(target: str, duration: int, api_port: int = 8000):
+    """Generate normal/benign traffic — realistic HTTP browsing simulation"""
+    log(f"Generating normal traffic for {duration}s...")
+    if not HAS_REQUESTS:
+        warn("requests not installed — skipping (pip3 install requests)")
+        return
+
+    import socket
+    endpoints = [
+        f"http://{target}:{api_port}/api/health",
+        f"http://{target}:{api_port}/api/stream/snapshot",
+        f"http://{target}:{api_port}/api/models",
+        f"http://{target}:{api_port}/api/debug/stats",
+        f"http://{target}:{api_port}/",
+    ]
+    # Also do some TCP browsing to port 80 with realistic timing
+    deadline = time.time() + duration
+    sent = 0
+    while time.time() < deadline:
+        url = endpoints[sent % len(endpoints)]
+        try:
+            requests.get(url, timeout=3)
+        except Exception:
+            pass
+        sent += 1
+        # Realistic inter-request delay: 0.5–1.5s
+        time.sleep(0.5 + (sent % 3) * 0.3)
+
+    # Also a few short-lived TCP flows to port 80 (simulate web browsing)
+    for _ in range(min(10, duration // 3)):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((target, 80))
+            s.send(b"GET / HTTP/1.0\r\nHost: " + target.encode() + b"\r\n\r\n")
+            s.recv(256)
+            s.close()
+        except Exception:
+            pass
+        time.sleep(1.0)
+
+    ok(f"Normal traffic done ({sent} requests)")
+
+
+# ── Report saving ─────────────────────────────────────────────
+def save_report(filepath: str, phases: list[dict]):
+    """Save structured JSON report with stats from each test phase."""
+    report = {
+        "generated_at": datetime.now().isoformat(),
+        "phases": phases,
+    }
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    ok(f"Report saved → {filepath}")
+
+
 # ── Attack plan ───────────────────────────────────────────────
 ATTACK_PLAN = [
     ("syn",   attack_syn,      "SYN Flood → DoS"),
@@ -205,15 +261,20 @@ ATTACK_PLAN = [
 ]
 
 
-def run_all(target: str, duration: int, api_port: int = 8000):
+def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None):
     header(f"Starting full attack sequence → {target}")
     header(f"Each attack: {duration}s | API port: {api_port}")
 
+    phases = []
+
     stats_before = fetch_stats(target, api_port)
     print_stats(stats_before, "BEFORE ATTACKS")
+    if stats_before:
+        phases.append({"phase": "before_attacks", "timestamp": datetime.now().isoformat(), "stats": stats_before})
 
     for name, fn, desc in ATTACK_PLAN:
         header(f"[{name.upper()}] {desc}")
+        t_start = datetime.now().isoformat()
         fn(target, duration)
 
         # Show incremental stats after each attack
@@ -223,10 +284,14 @@ def run_all(target: str, duration: int, api_port: int = 8000):
             classes = stats.get("events_by_attack_class", {})
             if classes:
                 print(f"  Detected classes so far: {classes}")
+            phases.append({"phase": f"after_{name}", "attack": name, "started_at": t_start,
+                           "finished_at": datetime.now().isoformat(), "stats": stats})
 
     time.sleep(3)
     stats_after = fetch_stats(target, api_port)
     print_stats(stats_after, "AFTER ALL ATTACKS")
+    if stats_after:
+        phases.append({"phase": "after_all_attacks", "timestamp": datetime.now().isoformat(), "stats": stats_after})
 
     # Summary
     header("=== SUMMARY ===")
@@ -250,6 +315,50 @@ def run_all(target: str, duration: int, api_port: int = 8000):
         else:
             warn("No anomalies detected — check that capture is running and mode is correct")
 
+    if save:
+        save_report(save, phases)
+
+    return phases
+
+
+def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None):
+    """Full test: normal baseline → all attacks → normal again → save structured report."""
+    header(f"Full test (normal + attacks + normal) → {target}")
+    phases = []
+
+    # Phase 1: normal baseline
+    header("[NORMAL] Baseline normal traffic")
+    t0 = datetime.now().isoformat()
+    attack_normal(target, max(duration, 20), api_port)
+    time.sleep(3)
+    stats_normal_before = fetch_stats(target, api_port)
+    print_stats(stats_normal_before, "AFTER NORMAL (baseline)")
+    if stats_normal_before:
+        phases.append({"phase": "normal_baseline", "started_at": t0,
+                       "finished_at": datetime.now().isoformat(), "stats": stats_normal_before})
+
+    # Phase 2: all attacks
+    attack_phases = run_all(target, duration, api_port, save=None)
+    phases.extend(attack_phases)
+
+    # Phase 3: normal traffic again
+    header("[NORMAL] Post-attack normal traffic")
+    t1 = datetime.now().isoformat()
+    attack_normal(target, max(duration, 20), api_port)
+    time.sleep(3)
+    stats_normal_after = fetch_stats(target, api_port)
+    print_stats(stats_normal_after, "AFTER NORMAL (post-attack)")
+    if stats_normal_after:
+        phases.append({"phase": "normal_post_attack", "started_at": t1,
+                       "finished_at": datetime.now().isoformat(), "stats": stats_normal_after})
+
+    if save:
+        save_report(save, phases)
+    else:
+        auto_name = f"anomalynet_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        save_report(auto_name, phases)
+        print(f"  Tip: copy report with:  scp root@{target}:{auto_name} .")
+
 
 def run_single(name: str, target: str, duration: int):
     fn = None
@@ -270,12 +379,15 @@ def main():
     )
     parser.add_argument("--target", "-t", required=True, help="Victim VPS IP address")
     parser.add_argument("--mode", "-m", default="quick",
-        choices=["quick", "all", "check", "syn", "udp", "icmp", "scan", "http", "brute"],
-        help="Attack mode (default: quick)")
+        choices=["quick", "all", "full", "check", "normal",
+                 "syn", "udp", "icmp", "scan", "http", "brute"],
+        help="Attack mode (default: quick). 'full' = normal+attacks+normal+report")
     parser.add_argument("--duration", "-d", type=int, default=None,
-        help="Duration per attack in seconds (default: 10 for quick, 30 for all)")
+        help="Duration per attack in seconds (default: 10 for quick, 30 for all/full)")
     parser.add_argument("--api-port", type=int, default=8000,
         help="AnomalyNet API port on victim (default: 8000)")
+    parser.add_argument("--save", "-s", type=str, default=None,
+        help="Save JSON report to file (default: auto-named for --mode full)")
     args = parser.parse_args()
 
     print()
@@ -290,20 +402,35 @@ def main():
     if args.mode == "check":
         stats = fetch_stats(args.target, args.api_port)
         print_stats(stats, "CURRENT")
+        if args.save and stats:
+            save_report(args.save, [{"phase": "check", "timestamp": datetime.now().isoformat(), "stats": stats}])
         return
 
-    if args.mode == "quick":
+    if args.mode == "normal":
+        duration = args.duration or 30
+        attack_normal(args.target, duration, args.api_port)
+        time.sleep(2)
+        stats = fetch_stats(args.target, args.api_port)
+        print_stats(stats, "after normal traffic")
+        if args.save and stats:
+            save_report(args.save, [{"phase": "normal", "timestamp": datetime.now().isoformat(), "stats": stats}])
+    elif args.mode == "quick":
         duration = args.duration or 10
-        run_all(args.target, duration, args.api_port)
+        run_all(args.target, duration, args.api_port, save=args.save)
     elif args.mode == "all":
         duration = args.duration or 30
-        run_all(args.target, duration, args.api_port)
+        run_all(args.target, duration, args.api_port, save=args.save)
+    elif args.mode == "full":
+        duration = args.duration or 30
+        run_full(args.target, duration, args.api_port, save=args.save)
     else:
         duration = args.duration or 15
         run_single(args.mode, args.target, duration)
         time.sleep(2)
         stats = fetch_stats(args.target, args.api_port)
         print_stats(stats, f"after {args.mode}")
+        if args.save and stats:
+            save_report(args.save, [{"phase": args.mode, "timestamp": datetime.now().isoformat(), "stats": stats}])
 
 
 if __name__ == "__main__":
