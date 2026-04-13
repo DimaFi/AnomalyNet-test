@@ -40,14 +40,32 @@ def header(msg): print(f"\n{BOLD}{msg}{NC}")
 
 
 # ── API helpers ───────────────────────────────────────────────
-def fetch_stats(target: str, port: int = 8000) -> dict | None:
+def fetch_stats(target: str, port: int = 8000, retries: int = 2) -> dict | None:
+    """Fetch stats from AnomalyNet API with retry on failure."""
     if not HAS_REQUESTS:
         return None
-    try:
-        r = requests.get(f"http://{target}:{port}/api/debug/stats", timeout=5)
-        return r.json()
-    except Exception:
-        return None
+    url = f"http://{target}:{port}/api/debug/stats"
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.Timeout:
+            if attempt < retries - 1:
+                warn(f"API timeout (attempt {attempt+1}/{retries}), retrying in 5s...")
+                time.sleep(5)
+            else:
+                warn(f"API timeout after {retries} attempts: {url}")
+        except requests.exceptions.ConnectionError as e:
+            if attempt < retries - 1:
+                warn(f"API connection error (attempt {attempt+1}/{retries}): {e}, retrying in 5s...")
+                time.sleep(5)
+            else:
+                warn(f"API unreachable: {e}")
+        except Exception as e:
+            warn(f"API error: {type(e).__name__}: {e}")
+            break
+    return None
 
 
 def print_stats(stats: dict, label: str = ""):
