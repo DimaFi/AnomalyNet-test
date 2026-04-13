@@ -6,8 +6,16 @@ Run on the ATTACKER VPS to generate traffic toward the VICTIM VPS.
 Usage:
     python3 attack.py --target 1.2.3.4 --mode quick
     python3 attack.py --target 1.2.3.4 --mode all --reset-victim --victim-key ~/.ssh/id_rsa
+    python3 attack.py --target 1.2.3.4 --mode all --unblock-victim --victim-key ~/.ssh/id_rsa
     python3 attack.py --target 1.2.3.4 --mode full --reset-victim --victim-export export.json
     python3 attack.py --target 1.2.3.4 --mode check
+
+Auto-block workflow (recommended for flood attacks):
+    1. Enable auto_block on victim in Settings
+    2. Run: python3 attack.py --target VICTIM --mode all --unblock-victim --reset-victim --victim-key ~/.ssh/id_rsa
+    3. Before each attack: attacker IP is unblocked
+    4. Attack runs → AnomalyNet detects → auto_block fires → flood stops naturally
+    5. After victim service restart: counters reset, ready for next attack
 """
 
 import argparse
@@ -40,32 +48,56 @@ def header(msg): print(f"\n{BOLD}{msg}{NC}")
 
 
 # ── Victim SSH helpers ────────────────────────────────────────
-def reset_victim_service(target: str, user: str = "root", ssh_port: int = 22,
-                         ssh_key: str | None = None) -> bool:
-    """SSH to victim and restart anomalynet service to reset stats counters."""
+def _ssh_run(target: str, command: str, user: str = "root",
+             ssh_port: int = 22, ssh_key: str | None = None,
+             timeout: int = 20) -> tuple[bool, str]:
+    """Run a command on the victim via SSH. Returns (success, stderr)."""
     cmd = ["ssh",
            "-o", "StrictHostKeyChecking=no",
            "-o", "ConnectTimeout=10",
            "-p", str(ssh_port)]
     if ssh_key:
         cmd += ["-i", ssh_key]
-    cmd += [f"{user}@{target}",
-            "systemctl restart anomalynet && sleep 4"]
-    log(f"Resetting victim service via SSH ({user}@{target})...")
+    cmd += [f"{user}@{target}", command]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=20)
-        if result.returncode == 0:
-            ok("Victim service restarted — counters cleared")
-            return True
-        else:
-            warn(f"SSH reset failed (rc={result.returncode}): {result.stderr.decode().strip()}")
-            return False
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        return result.returncode == 0, result.stderr.decode().strip()
     except subprocess.TimeoutExpired:
-        warn("SSH reset timed out")
-        return False
+        return False, "SSH timed out"
     except FileNotFoundError:
-        warn("ssh not found — skipping reset")
-        return False
+        return False, "ssh not found"
+
+
+def reset_victim_service(target: str, user: str = "root", ssh_port: int = 22,
+                         ssh_key: str | None = None) -> bool:
+    """SSH to victim and restart anomalynet service to reset stats counters."""
+    log(f"Resetting victim service via SSH ({user}@{target})...")
+    ok_flag, err_msg = _ssh_run(
+        target,
+        "systemctl restart anomalynet && sleep 4",
+        user, ssh_port, ssh_key, timeout=25,
+    )
+    if ok_flag:
+        ok("Victim service restarted — counters cleared")
+    else:
+        warn(f"SSH reset failed: {err_msg}")
+    return ok_flag
+
+
+def unblock_victim_ips(target: str, api_port: int = 8000, user: str = "root",
+                       ssh_port: int = 22, ssh_key: str | None = None) -> bool:
+    """SSH to victim and remove all blocked IPs via API (DELETE /api/blocked-ips/all)."""
+    log(f"Unblocking all IPs on victim ({user}@{target})...")
+    ok_flag, err_msg = _ssh_run(
+        target,
+        f"curl -s -X DELETE http://localhost:{api_port}/api/blocked-ips/all",
+        user, ssh_port, ssh_key, timeout=15,
+    )
+    if ok_flag:
+        ok("All blocked IPs removed on victim")
+    else:
+        warn(f"Unblock SSH failed: {err_msg}")
+    return ok_flag
 
 
 def fetch_victim_export(target: str, port: int = 8000) -> dict | None:
@@ -417,11 +449,18 @@ ATTACK_PLAN = [
 
 
 def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None,
-            reset_victim: bool = False, victim_user: str = "root",
-            victim_ssh_port: int = 22, victim_ssh_key: str | None = None):
+            reset_victim: bool = False, unblock_victim: bool = False,
+            victim_user: str = "root", victim_ssh_port: int = 22,
+            victim_ssh_key: str | None = None):
     header(f"Starting full attack sequence → {target}")
+    flags = []
+    if reset_victim:   flags.append("reset-victim: ON")
+    if unblock_victim: flags.append("unblock-victim: ON (auto_block mode)")
     header(f"Each attack: {duration}s | API port: {api_port}"
-           + (" | reset-victim: ON" if reset_victim else ""))
+           + (f" | {', '.join(flags)}" if flags else ""))
+
+    if unblock_victim:
+        log("AUTO-BLOCK MODE: victim will block attacker → flood stops naturally → unblock before each round")
 
     phases = []
 
@@ -436,14 +475,33 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     for name, fn, desc in ATTACK_PLAN:
         header(f"[{name.upper()}] {desc}")
         t_start = datetime.now().isoformat()
+
+        # Unblock first so attacker isn't still blocked from previous round
+        if unblock_victim:
+            unblock_victim_ips(target, api_port, victim_user, victim_ssh_port, victim_ssh_key)
+            time.sleep(1)  # brief pause for iptables rule removal
+
+        # Reset counters before each attack for clean per-attack stats
         if reset_victim:
             reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key)
+
         stats_phase_before = fetch_stats(target, api_port)
         fn(target, duration)
 
-        # Let AnomalyNet process the last flows
-        time.sleep(3)
+        # Flood attacks: wait for auto_block to fire and API to recover
+        # Port scan / http: 5s is enough; flood: need up to 15s
+        wait_s = 15 if name in ("syn", "udp", "icmp") else 5
+        if unblock_victim and name in ("syn", "udp", "icmp"):
+            log(f"Waiting {wait_s}s for auto_block to fire and API to recover...")
+        time.sleep(wait_s)
+
         stats_phase_after = fetch_stats(target, api_port)
+        if stats_phase_after is None and unblock_victim:
+            # API still recovering — try once more after extra wait
+            warn("API still recovering, retrying in 10s...")
+            time.sleep(10)
+            stats_phase_after = fetch_stats(target, api_port)
+
         if stats_phase_after:
             phases.append({"phase": f"after_{name}", "attack": name, "started_at": t_start,
                            "finished_at": datetime.now().isoformat(), "stats": stats_phase_after})
@@ -497,8 +555,9 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
 
 
 def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None,
-             reset_victim: bool = False, victim_user: str = "root",
-             victim_ssh_port: int = 22, victim_ssh_key: str | None = None):
+             reset_victim: bool = False, unblock_victim: bool = False,
+             victim_user: str = "root", victim_ssh_port: int = 22,
+             victim_ssh_key: str | None = None):
     """Full test: normal baseline → all attacks → normal again → save structured report."""
     header(f"Full test (normal + attacks + normal) → {target}")
     phases = []
@@ -516,8 +575,9 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
 
     # Phase 2: all attacks
     attack_phases = run_all(target, duration, api_port, save=None,
-                            reset_victim=reset_victim, victim_user=victim_user,
-                            victim_ssh_port=victim_ssh_port, victim_ssh_key=victim_ssh_key)
+                            reset_victim=reset_victim, unblock_victim=unblock_victim,
+                            victim_user=victim_user, victim_ssh_port=victim_ssh_port,
+                            victim_ssh_key=victim_ssh_key)
     phases.extend(attack_phases)
 
     # Phase 3: normal traffic again
@@ -569,6 +629,10 @@ def main():
         help="Save JSON report to file (default: auto-named for --mode full)")
     parser.add_argument("--reset-victim", action="store_true",
         help="SSH to victim and restart anomalynet before each attack (clean counters)")
+    parser.add_argument("--unblock-victim", action="store_true",
+        help="SSH to victim and unblock all IPs before each attack (for auto_block mode). "
+             "Use when victim has auto_block enabled — attacker gets blocked, flood stops, "
+             "then this flag unblocks before the next attack automatically.")
     parser.add_argument("--victim-user", type=str, default="root",
         help="SSH user on victim (default: root)")
     parser.add_argument("--victim-ssh-port", type=int, default=22,
@@ -581,6 +645,7 @@ def main():
 
     ssh_kwargs = dict(
         reset_victim=args.reset_victim,
+        unblock_victim=args.unblock_victim,
         victim_user=args.victim_user,
         victim_ssh_port=args.victim_ssh_port,
         victim_ssh_key=args.victim_key,
@@ -589,10 +654,11 @@ def main():
     print()
     print(f"  {'='*44}")
     print(f"  AnomalyNet Attack Simulator")
-    print(f"  Target       : {args.target}")
-    print(f"  Mode         : {args.mode}")
-    print(f"  Reset victim : {'YES (SSH)' if args.reset_victim else 'no'}")
-    print(f"  Time         : {datetime.now().strftime('%H:%M:%S')}")
+    print(f"  Target         : {args.target}")
+    print(f"  Mode           : {args.mode}")
+    print(f"  Reset victim   : {'YES (SSH restart)' if args.reset_victim else 'no'}")
+    print(f"  Unblock victim : {'YES (auto_block mode)' if args.unblock_victim else 'no'}")
+    print(f"  Time           : {datetime.now().strftime('%H:%M:%S')}")
     print(f"  {'='*44}")
     print()
 
@@ -621,6 +687,9 @@ def main():
 
     else:
         duration = args.duration or 15
+        if args.unblock_victim:
+            unblock_victim_ips(args.target, args.api_port, args.victim_user,
+                               args.victim_ssh_port, args.victim_key)
         if args.reset_victim:
             reset_victim_service(args.target, args.victim_user,
                                  args.victim_ssh_port, args.victim_key)
