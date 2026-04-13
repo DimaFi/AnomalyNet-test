@@ -296,6 +296,54 @@ def save_report(filepath: str, phases: list[dict]):
     ok(f"Report saved → {filepath}")
 
 
+# Expected detection classes per attack type
+EXPECTED_CLASSES: dict[str, list[str]] = {
+    "syn":   ["DoS"],
+    "udp":   ["DoS", "DDoS"],
+    "icmp":  ["DoS"],
+    "scan":  ["Recon"],
+    "http":  ["DoS", "WebAttack"],
+    "brute": ["BruteForce"],
+}
+
+
+def print_comparison_table(attack_results: list[dict]):
+    """Print thesis-ready comparison table: attack vs what AnomalyNet detected."""
+    if not attack_results:
+        return
+    header("=== ИТОГОВАЯ ТАБЛИЦА: Атака vs Обнаружение ===")
+    COL = [14, 18, 22, 10, 8]
+    sep = "+" + "+".join("-" * (c + 2) for c in COL) + "+"
+    def row(*cells):
+        parts = []
+        for cell, w in zip(cells, COL):
+            parts.append(f" {str(cell):<{w}} ")
+        print("|" + "|".join(parts) + "|")
+
+    print(sep)
+    row("Атака", "Ожид. класс", "Обнаружен класс", "Событий", "Детекция")
+    print(sep)
+
+    for r in attack_results:
+        name     = r.get("name", "?")
+        detected = r.get("detected", 0)
+        total    = r.get("total", 0)
+        classes  = r.get("new_classes", {})
+        expected = EXPECTED_CLASSES.get(name, ["?"])
+
+        cls_str = ", ".join(f"{c}:{n}" for c, n in sorted(classes.items(), key=lambda x: -x[1])) if classes else "—"
+        exp_str = "/".join(expected)
+        rate    = f"{detected/total*100:.0f}%" if total > 0 else "—"
+
+        # Check if detected expected class
+        hit = any(e in classes for e in expected)
+        mark = f"{GREEN}✓{NC}" if hit else f"{YELLOW}✗{NC}"
+        row(f"{mark} {name}", exp_str, cls_str[:22], f"{detected}/{total}", rate)
+
+    print(sep)
+    print()
+
+
 # ── Attack plan ───────────────────────────────────────────────
 ATTACK_PLAN = [
     ("syn",   attack_syn,      "SYN Flood → DoS"),
@@ -318,6 +366,7 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     if stats_before:
         phases.append({"phase": "before_attacks", "timestamp": datetime.now().isoformat(), "stats": stats_before})
 
+    attack_results = []
     for name, fn, desc in ATTACK_PLAN:
         header(f"[{name.upper()}] {desc}")
         t_start = datetime.now().isoformat()
@@ -331,6 +380,17 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
             phases.append({"phase": f"after_{name}", "attack": name, "started_at": t_start,
                            "finished_at": datetime.now().isoformat(), "stats": stats_phase_after})
         print_attack_result(name, desc, stats_phase_before, stats_phase_after)
+
+        # Collect for comparison table
+        if stats_phase_before and stats_phase_after:
+            b_cls = stats_phase_before.get("events_by_attack_class", {})
+            a_cls = stats_phase_after.get("events_by_attack_class", {})
+            b_lbl = stats_phase_before.get("events_by_label", {})
+            a_lbl = stats_phase_after.get("events_by_label", {})
+            new_cls = {c: a_cls.get(c, 0) - b_cls.get(c, 0) for c in set(list(b_cls) + list(a_cls)) if a_cls.get(c, 0) - b_cls.get(c, 0) > 0}
+            total   = stats_phase_after.get("uptime_events_total", 0) - stats_phase_before.get("uptime_events_total", 0)
+            detected = (a_lbl.get("warning", 0) - b_lbl.get("warning", 0)) + (a_lbl.get("anomaly", 0) - b_lbl.get("anomaly", 0))
+            attack_results.append({"name": name, "desc": desc, "total": total, "detected": detected, "new_classes": new_cls})
 
     time.sleep(3)
     stats_after = fetch_stats(target, api_port)
@@ -359,6 +419,8 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
             ok("AnomalyNet detected attacks!")
         else:
             warn("No anomalies detected — check that capture is running and mode is correct")
+
+    print_comparison_table(attack_results)
 
     if save:
         save_report(save, phases)
