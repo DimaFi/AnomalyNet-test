@@ -389,6 +389,98 @@ def save_report(filepath: str, phases: list[dict]):
     ok(f"Report saved → {filepath}")
 
 
+def save_markdown_report(filepath: str, phases: list[dict], target: str,
+                         attack_results: list[dict] | None = None):
+    """Save human-readable Markdown report for diploma/thesis."""
+    now = datetime.now()
+    lines = []
+    lines.append(f"# AnomalyNet — Отчёт тестирования")
+    lines.append(f"")
+    lines.append(f"**Дата/время:** {now.strftime('%d.%m.%Y %H:%M:%S')}")
+    lines.append(f"**Цель:** `{target}`")
+    lines.append(f"")
+
+    # Detection mode from first phase that has stats
+    for p in phases:
+        stats = p.get("stats", {})
+        if stats:
+            lines.append(f"**Режим детекции:** {stats.get('detection_mode', '?')}")
+            lines.append(f"**Модель:** `{stats.get('active_model_id', '?')}`")
+            lines.append(f"**Интерфейс:** `{stats.get('interface', '?')}`")
+            break
+    lines.append(f"")
+
+    # Per-attack results table
+    if attack_results:
+        lines.append(f"## Результаты по атакам")
+        lines.append(f"")
+        lines.append(f"| Атака | Ожид. класс | Обнаружен класс | Событий | Обнаружено | Детекция |")
+        lines.append(f"|-------|-------------|-----------------|---------|------------|----------|")
+        for r in attack_results:
+            name     = r.get("name", "?")
+            total    = r.get("total", 0)
+            detected = r.get("detected", 0)
+            classes  = r.get("new_classes", {})
+            expected = EXPECTED_CLASSES.get(name, ["?"])
+            cls_str  = ", ".join(f"{c} ({n})" for c, n in sorted(classes.items(), key=lambda x: -x[1])) if classes else "—"
+            exp_str  = " / ".join(expected)
+            rate     = f"{detected/total*100:.0f}%" if total > 0 else "—"
+            hit      = any(e in classes for e in expected)
+            mark     = "✅" if hit else "❌"
+            lines.append(f"| {name} | {exp_str} | {cls_str} | {total} | {detected} | {rate} {mark} |")
+        lines.append(f"")
+
+    # Stats before/after
+    before = next((p["stats"] for p in phases if p.get("phase") == "before_attacks"), None)
+    after  = next((p["stats"] for p in phases if p.get("phase") == "after_all_attacks"), None)
+    if before and after:
+        lines.append(f"## Сводная статистика")
+        lines.append(f"")
+        lines.append(f"| Метрика | До атак | После атак | Δ |")
+        lines.append(f"|---------|---------|------------|---|")
+        for key, label in [
+            ("uptime_events_total", "Всего событий"),
+        ]:
+            b = before.get(key, 0)
+            a = after.get(key, 0)
+            lines.append(f"| {label} | {b} | {a} | +{a-b} |")
+        for lbl in ("normal", "warning", "anomaly"):
+            b = before.get("events_by_label", {}).get(lbl, 0)
+            a = after.get("events_by_label", {}).get(lbl, 0)
+            lines.append(f"| {lbl} | {b} | {a} | +{a-b} |")
+        lines.append(f"")
+
+        # Attack classes seen
+        classes_after = after.get("events_by_attack_class", {})
+        classes_before = before.get("events_by_attack_class", {})
+        if classes_after:
+            lines.append(f"## Классы атак, обнаруженные во время тестирования")
+            lines.append(f"")
+            lines.append(f"| Класс | Количество потоков |")
+            lines.append(f"|-------|--------------------|")
+            for cls, cnt in sorted(classes_after.items(), key=lambda x: -x[1]):
+                new = cnt - classes_before.get(cls, 0)
+                lines.append(f"| {cls} | {new} |")
+            lines.append(f"")
+
+    # Phase log
+    lines.append(f"## Лог фаз тестирования")
+    lines.append(f"")
+    for p in phases:
+        phase_name = p.get("phase", "?")
+        ts = p.get("timestamp") or p.get("started_at") or p.get("finished_at") or ""
+        stats = p.get("stats", {})
+        total = stats.get("uptime_events_total", "?") if stats else "?"
+        lines.append(f"- **{phase_name}** | {ts[:19].replace('T',' ')} | events_total={total}")
+    lines.append(f"")
+    lines.append(f"---")
+    lines.append(f"*Сгенерировано автоматически с помощью AnomalyNet Attack Simulator*")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    ok(f"Markdown report saved → {filepath}")
+
+
 # Expected detection classes per attack type
 EXPECTED_CLASSES: dict[str, list[str]] = {
     "syn":   ["DoS"],
@@ -547,6 +639,8 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
 
     if save:
         save_report(save, phases)
+        md_path = save.replace(".json", ".md") if save.endswith(".json") else save + ".md"
+        save_markdown_report(md_path, phases, target, attack_results)
 
     return phases
 
@@ -590,10 +684,14 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
 
     if save:
         save_report(save, phases)
+        md_path = save.replace(".json", ".md") if save.endswith(".json") else save + ".md"
+        save_markdown_report(md_path, phases, target)
     else:
         auto_name = f"anomalynet_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         save_report(auto_name, phases)
-        print(f"  Tip: copy report with:  scp root@{target}:{auto_name} .")
+        md_path = auto_name.replace(".json", ".md")
+        save_markdown_report(md_path, phases, target)
+        print(f"  Tip: copy report with:  scp root@{target}:{auto_name} . && scp root@{target}:{md_path} .")
 
 
 def run_single(name: str, target: str, duration: int):
