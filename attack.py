@@ -480,10 +480,7 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
         if unblock_victim:
             unblock_victim_ips(target, api_port, victim_user, victim_ssh_port, victim_ssh_key)
             time.sleep(1)  # brief pause for iptables rule removal
-
-        # Reset counters before each attack for clean per-attack stats
-        if reset_victim:
-            reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key)
+        # NOTE: no per-attack reset — stats diff (after - before) gives clean per-attack numbers
 
         stats_phase_before = fetch_stats(target, api_port)
         fn(target, duration)
