@@ -119,8 +119,26 @@ def header(msg): print(f"\n{BOLD}{msg}{NC}")
 # ── Victim SSH helpers ────────────────────────────────────────
 def _ssh_run(target: str, command: str, user: str = "root",
              ssh_port: int = 22, ssh_key: str | None = None,
+             ssh_password: str | None = None,
              timeout: int = 20) -> tuple[bool, str]:
-    """Run a command on the victim via SSH. Returns (success, stderr)."""
+    """Run a command on the victim via SSH. Returns (success, stderr).
+    Uses paramiko if password is provided, otherwise falls back to subprocess ssh."""
+    if ssh_password and HAS_PARAMIKO:
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(target, port=ssh_port, username=user,
+                           password=ssh_password, timeout=10, banner_timeout=10)
+            _, stdout, stderr = client.exec_command(command, timeout=timeout)
+            stdout.channel.recv_exit_status()
+            err_out = stderr.read().decode().strip()
+            rc = stdout.channel.recv_exit_status()
+            client.close()
+            return rc == 0, err_out
+        except Exception as e:
+            return False, str(e)
+
+    # Fallback: subprocess ssh (key-based)
     cmd = ["ssh",
            "-o", "StrictHostKeyChecking=no",
            "-o", "ConnectTimeout=10",
@@ -138,13 +156,14 @@ def _ssh_run(target: str, command: str, user: str = "root",
 
 
 def reset_victim_service(target: str, user: str = "root", ssh_port: int = 22,
-                         ssh_key: str | None = None) -> bool:
+                         ssh_key: str | None = None,
+                         ssh_password: str | None = None) -> bool:
     """SSH to victim and restart anomalynet service to reset stats counters."""
     log(f"Resetting victim service via SSH ({user}@{target})...")
     ok_flag, err_msg = _ssh_run(
         target,
         "systemctl restart anomalynet && sleep 4",
-        user, ssh_port, ssh_key, timeout=25,
+        user, ssh_port, ssh_key, ssh_password=ssh_password, timeout=25,
     )
     if ok_flag:
         ok("Victim service restarted — counters cleared")
@@ -154,13 +173,14 @@ def reset_victim_service(target: str, user: str = "root", ssh_port: int = 22,
 
 
 def unblock_victim_ips(target: str, api_port: int = 8000, user: str = "root",
-                       ssh_port: int = 22, ssh_key: str | None = None) -> bool:
+                       ssh_port: int = 22, ssh_key: str | None = None,
+                       ssh_password: str | None = None) -> bool:
     """SSH to victim and remove all blocked IPs via API (DELETE /api/blocked-ips/all)."""
     log(f"Unblocking all IPs on victim ({user}@{target})...")
     ok_flag, err_msg = _ssh_run(
         target,
         f"curl -s -X DELETE http://localhost:{api_port}/api/blocked-ips/all",
-        user, ssh_port, ssh_key, timeout=15,
+        user, ssh_port, ssh_key, ssh_password=ssh_password, timeout=15,
     )
     if ok_flag:
         ok("All blocked IPs removed on victim")
@@ -617,7 +637,7 @@ ATTACK_PLAN = [
 def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None,
             reset_victim: bool = False, unblock_victim: bool = False,
             victim_user: str = "root", victim_ssh_port: int = 22,
-            victim_ssh_key: str | None = None,
+            victim_ssh_key: str | None = None, victim_ssh_pass: str | None = None,
             remote: "RemoteAttacker | None" = None):
     header(f"Starting full attack sequence → {target}")
     flags = []
@@ -632,7 +652,7 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
     phases = []
 
     if reset_victim:
-        reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key)
+        reset_victim_service(target, victim_user, victim_ssh_port, victim_ssh_key, victim_ssh_pass)
     stats_before = fetch_stats(target, api_port)
     print_stats(stats_before, "BEFORE ATTACKS")
     if stats_before:
@@ -645,7 +665,8 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
 
         # Unblock first so attacker isn't still blocked from previous round
         if unblock_victim:
-            unblock_victim_ips(target, api_port, victim_user, victim_ssh_port, victim_ssh_key)
+            unblock_victim_ips(target, api_port, victim_user, victim_ssh_port,
+                               victim_ssh_key, victim_ssh_pass)
             time.sleep(1)  # brief pause for iptables rule removal
         # NOTE: no per-attack reset — stats diff (after - before) gives clean per-attack numbers
 
@@ -723,7 +744,7 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
 def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None,
              reset_victim: bool = False, unblock_victim: bool = False,
              victim_user: str = "root", victim_ssh_port: int = 22,
-             victim_ssh_key: str | None = None,
+             victim_ssh_key: str | None = None, victim_ssh_pass: str | None = None,
              remote: "RemoteAttacker | None" = None):
     """Full test: normal baseline → all attacks → normal again → save structured report."""
     header(f"Full test (normal + attacks + normal) → {target}")
@@ -744,7 +765,8 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
     attack_phases = run_all(target, duration, api_port, save=None,
                             reset_victim=reset_victim, unblock_victim=unblock_victim,
                             victim_user=victim_user, victim_ssh_port=victim_ssh_port,
-                            victim_ssh_key=victim_ssh_key, remote=remote)
+                            victim_ssh_key=victim_ssh_key, victim_ssh_pass=victim_ssh_pass,
+                            remote=remote)
     phases.extend(attack_phases)
 
     # Phase 3: normal traffic again
@@ -810,6 +832,8 @@ def main():
         help="SSH port on victim (default: 22)")
     parser.add_argument("--victim-key", type=str, default=None,
         help="Path to SSH private key for victim (default: system default)")
+    parser.add_argument("--victim-pass", type=str, default=None,
+        help="SSH password for victim (used for --unblock-victim and --reset-victim)")
     parser.add_argument("--victim-export", type=str, default=None,
         help="Save full event export from victim /api/export to this file")
     # Remote attacker (run from your PC, attacks via SSH on attacker VPS)
@@ -830,6 +854,7 @@ def main():
         victim_user=args.victim_user,
         victim_ssh_port=args.victim_ssh_port,
         victim_ssh_key=args.victim_key,
+        victim_ssh_pass=args.victim_pass,
     )
 
     # Build remote attacker context if --attacker specified
