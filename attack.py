@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
 AnomalyNet Attack Simulator
-Run on the ATTACKER VPS to generate traffic toward the VICTIM VPS.
 
-Usage:
-    python3 attack.py --target 1.2.3.4 --mode quick
-    python3 attack.py --target 1.2.3.4 --mode all --reset-victim --victim-key ~/.ssh/id_rsa
-    python3 attack.py --target 1.2.3.4 --mode all --unblock-victim --victim-key ~/.ssh/id_rsa
-    python3 attack.py --target 1.2.3.4 --mode full --reset-victim --victim-export export.json
-    python3 attack.py --target 1.2.3.4 --mode check
+Two run modes:
 
-Auto-block workflow (recommended for flood attacks):
-    1. Enable auto_block on victim in Settings
-    2. Run: python3 attack.py --target VICTIM --mode all --unblock-victim --reset-victim --victim-key ~/.ssh/id_rsa
-    3. Before each attack: attacker IP is unblocked
-    4. Attack runs → AnomalyNet detects → auto_block fires → flood stops naturally
-    5. After victim service restart: counters reset, ready for next attack
+  A) Run directly on attacker VPS (classic):
+       python3 attack.py --target VICTIM --mode all
+
+  B) Run from your PC, attacks executed via SSH on remote attacker (recommended):
+       python3 attack.py --target VICTIM --mode all \\
+         --attacker 37.252.19.2 --attacker-pass "password" \\
+         --save report.json
+     Your PC collects stats (never blocked), attacker machine runs hping3/nmap.
+     Requires: pip install paramiko requests
+
+Auto-block + auto-unblock workflow:
+    1. Enable auto_block on victim, add YOUR PC IP to whitelist
+    2. Set auto_unblock = ON, cooldown = 1 min
+    3. Run with --attacker — attacker gets blocked, your PC is safe
 """
 
 import argparse
@@ -30,6 +32,73 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    import paramiko
+    HAS_PARAMIKO = True
+except ImportError:
+    HAS_PARAMIKO = False
+
+
+# ── Remote attacker via SSH (paramiko) ───────────────────────
+class RemoteAttacker:
+    """
+    Executes attack commands on a remote machine via SSH.
+    Allows running attack.py from your local PC while flood traffic
+    originates from the attacker VPS (so only the attacker gets blocked).
+    """
+    def __init__(self, host: str, user: str = "root",
+                 password: str | None = None, key: str | None = None):
+        self.host = host
+        self.user = user
+        self.password = password
+        self.key = key
+
+    def _connect(self):
+        if not HAS_PARAMIKO:
+            raise RuntimeError("paramiko not installed — run: pip install paramiko")
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            self.host, username=self.user,
+            password=self.password,
+            key_filename=self.key,
+            timeout=15,
+            banner_timeout=15,
+        )
+        return client
+
+    def run_cmd(self, cmd: str, duration: int, label: str):
+        """Run a shell command on the remote attacker for `duration` seconds."""
+        log(f"[SSH→{self.host}] {label} for {duration}s...")
+        try:
+            client = self._connect()
+            full_cmd = f"timeout {duration + 3} {cmd}"
+            transport = client.get_transport()
+            channel = transport.open_session()
+            channel.exec_command(full_cmd)
+            time.sleep(duration)
+            channel.close()
+            client.close()
+            ok(f"{label} done")
+        except RuntimeError as e:
+            warn(str(e))
+        except Exception as e:
+            warn(f"SSH attack failed ({label}): {e}")
+
+    def run_blocking(self, cmd: str, timeout: int, label: str):
+        """Run a command and wait for it to finish (for nmap etc.)."""
+        log(f"[SSH→{self.host}] {label}...")
+        try:
+            client = self._connect()
+            _, stdout, _ = client.exec_command(cmd, timeout=timeout)
+            stdout.channel.recv_exit_status()  # wait for completion
+            client.close()
+            ok(f"{label} done")
+        except RuntimeError as e:
+            warn(str(e))
+        except Exception as e:
+            warn(f"SSH command failed ({label}): {e}")
 
 
 # ── Colors ────────────────────────────────────────────────────
@@ -225,7 +294,11 @@ def print_attack_result(name: str, desc: str, stats_before: dict | None, stats_a
 
 
 # ── Attack functions ──────────────────────────────────────────
-def run_cmd(cmd: list[str], duration: int, label: str):
+def run_cmd(cmd: list[str], duration: int, label: str,
+            remote: "RemoteAttacker | None" = None):
+    if remote:
+        remote.run_cmd(" ".join(cmd), duration, label)
+        return
     log(f"Running {label} for {duration}s...")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -243,36 +316,35 @@ def run_cmd(cmd: list[str], duration: int, label: str):
         raise
 
 
-def attack_syn(target: str, duration: int):
-    """SYN flood — should trigger DoS detection.
-    Uses -i u500 (2000 pps) instead of --flood to keep the victim API responsive."""
-    run_cmd(
-        ["hping3", "--syn", "-p", "80", "-i", "u500", "-q", target],
-        duration, "SYN Flood"
-    )
+def attack_syn(target: str, duration: int, remote=None):
+    """SYN flood — should trigger DoS detection."""
+    run_cmd(["hping3", "--syn", "-p", "80", "-i", "u500", "-q", target],
+            duration, "SYN Flood", remote)
 
 
-def attack_udp(target: str, duration: int):
+def attack_udp(target: str, duration: int, remote=None):
     """UDP flood — should trigger DoS/DDoS detection."""
-    run_cmd(
-        ["hping3", "--udp", "-p", "53", "-i", "u500", "-q", target],
-        duration, "UDP Flood"
-    )
+    run_cmd(["hping3", "--udp", "-p", "53", "-i", "u500", "-q", target],
+            duration, "UDP Flood", remote)
 
 
-def attack_icmp(target: str, duration: int):
+def attack_icmp(target: str, duration: int, remote=None):
     """ICMP flood (ping flood) — should trigger DoS detection."""
-    run_cmd(
-        ["hping3", "--icmp", "-i", "u500", "-q", target],
-        duration, "ICMP Flood"
-    )
+    run_cmd(["hping3", "--icmp", "-i", "u500", "-q", target],
+            duration, "ICMP Flood", remote)
 
 
-def attack_scan(target: str, duration: int):
+def attack_scan(target: str, duration: int, remote=None):
     """Port scan — should trigger Recon detection (especially in Advanced mode)"""
+    if remote:
+        remote.run_blocking(
+            f"nmap -sS -T4 --top-ports 1000 -q {target}",
+            timeout=max(duration, 60), label="Port Scan"
+        )
+        return
     log("Running Port Scan (nmap SYN scan, top 1000 ports)...")
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["nmap", "-sS", "-T4", "--top-ports", "1000", "-q", target],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=max(duration, 30)
@@ -284,8 +356,15 @@ def attack_scan(target: str, duration: int):
         ok("Port scan timeout (expected)")
 
 
-def attack_http(target: str, duration: int, port: int = 80):
+def attack_http(target: str, duration: int, port: int = 80, remote=None):
     """HTTP flood — many GET requests; should trigger WebAttack/DoS"""
+    if remote:
+        # Run curl loop on attacker machine
+        remote.run_cmd(
+            f"for i in $(seq 1 9999); do curl -s -o /dev/null http://{target}:{port}/ & done; sleep {duration}; kill %% 2>/dev/null",
+            duration, f"HTTP Flood :{port}"
+        )
+        return
     log(f"Running HTTP Flood on {target}:{port} for {duration}s...")
     if not HAS_REQUESTS:
         warn("requests not installed — skipping HTTP flood (pip3 install requests)")
@@ -301,23 +380,18 @@ def attack_http(target: str, duration: int, port: int = 80):
     ok(f"HTTP flood done ({sent} requests)")
 
 
-def attack_http_api(target: str, duration: int):
-    """HTTP flood against AnomalyNet API port (8000) — generates known HTTP traffic"""
-    attack_http(target, duration, port=8000)
+def attack_http_api(target: str, duration: int, remote=None):
+    """HTTP flood against AnomalyNet API port (8000)"""
+    attack_http(target, duration, port=8000, remote=remote)
 
 
-def attack_brute(target: str, duration: int):
+def attack_brute(target: str, duration: int, remote=None):
     """SSH brute force simulation — should trigger BruteForce detection"""
-    log(f"Running SSH brute force simulation for {duration}s...")
-    if not HAS_REQUESTS:
-        # Fallback: hping3 TCP to port 22
-        run_cmd(
-            ["hping3", "--syn", "-p", "22", "--flood", "-q", target],
-            duration, "SSH BruteForce (SYN)"
-        )
+    if remote:
+        run_cmd(["hping3", "--syn", "-p", "22", "-i", "u500", "-q", target],
+                duration, "SSH BruteForce (SYN)", remote)
         return
-
-    # Send many fast TCP connections to port 22
+    log(f"Running SSH brute force simulation for {duration}s...")
     import socket
     deadline = time.time() + duration
     attempts = 0
@@ -543,7 +617,8 @@ ATTACK_PLAN = [
 def run_all(target: str, duration: int, api_port: int = 8000, save: str | None = None,
             reset_victim: bool = False, unblock_victim: bool = False,
             victim_user: str = "root", victim_ssh_port: int = 22,
-            victim_ssh_key: str | None = None):
+            victim_ssh_key: str | None = None,
+            remote: "RemoteAttacker | None" = None):
     header(f"Starting full attack sequence → {target}")
     flags = []
     if reset_victim:   flags.append("reset-victim: ON")
@@ -575,7 +650,7 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
         # NOTE: no per-attack reset — stats diff (after - before) gives clean per-attack numbers
 
         stats_phase_before = fetch_stats(target, api_port)
-        fn(target, duration)
+        fn(target, duration, remote)
 
         # Flood attacks: wait for auto_block to fire and API to recover
         # Port scan / http: 5s is enough; flood: need up to 15s
@@ -648,7 +723,8 @@ def run_all(target: str, duration: int, api_port: int = 8000, save: str | None =
 def run_full(target: str, duration: int, api_port: int = 8000, save: str | None = None,
              reset_victim: bool = False, unblock_victim: bool = False,
              victim_user: str = "root", victim_ssh_port: int = 22,
-             victim_ssh_key: str | None = None):
+             victim_ssh_key: str | None = None,
+             remote: "RemoteAttacker | None" = None):
     """Full test: normal baseline → all attacks → normal again → save structured report."""
     header(f"Full test (normal + attacks + normal) → {target}")
     phases = []
@@ -668,7 +744,7 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
     attack_phases = run_all(target, duration, api_port, save=None,
                             reset_victim=reset_victim, unblock_victim=unblock_victim,
                             victim_user=victim_user, victim_ssh_port=victim_ssh_port,
-                            victim_ssh_key=victim_ssh_key)
+                            victim_ssh_key=victim_ssh_key, remote=remote)
     phases.extend(attack_phases)
 
     # Phase 3: normal traffic again
@@ -694,7 +770,7 @@ def run_full(target: str, duration: int, api_port: int = 8000, save: str | None 
         print(f"  Tip: copy report with:  scp root@{target}:{auto_name} . && scp root@{target}:{md_path} .")
 
 
-def run_single(name: str, target: str, duration: int):
+def run_single(name: str, target: str, duration: int, remote=None):
     fn = None
     for aname, afn, _ in ATTACK_PLAN:
         if aname == name:
@@ -703,7 +779,7 @@ def run_single(name: str, target: str, duration: int):
     if fn is None:
         err(f"Unknown attack: {name}. Choose: {[a[0] for a in ATTACK_PLAN]}")
         sys.exit(1)
-    fn(target, duration)
+    fn(target, duration, remote)
 
 
 # ── Main ──────────────────────────────────────────────────────
@@ -736,6 +812,16 @@ def main():
         help="Path to SSH private key for victim (default: system default)")
     parser.add_argument("--victim-export", type=str, default=None,
         help="Save full event export from victim /api/export to this file")
+    # Remote attacker (run from your PC, attacks via SSH on attacker VPS)
+    parser.add_argument("--attacker", type=str, default=None,
+        help="IP of attacker VPS — run attack commands via SSH on this machine. "
+             "Your PC collects stats (never blocked). Requires: pip install paramiko")
+    parser.add_argument("--attacker-user", type=str, default="root",
+        help="SSH user on attacker VPS (default: root)")
+    parser.add_argument("--attacker-pass", type=str, default=None,
+        help="SSH password for attacker VPS")
+    parser.add_argument("--attacker-key", type=str, default=None,
+        help="SSH private key path for attacker VPS")
     args = parser.parse_args()
 
     ssh_kwargs = dict(
@@ -746,11 +832,24 @@ def main():
         victim_ssh_key=args.victim_key,
     )
 
+    # Build remote attacker context if --attacker specified
+    remote: RemoteAttacker | None = None
+    if args.attacker:
+        remote = RemoteAttacker(
+            host=args.attacker,
+            user=args.attacker_user,
+            password=args.attacker_pass,
+            key=args.attacker_key,
+        )
+
     print()
     print(f"  {'='*44}")
     print(f"  AnomalyNet Attack Simulator")
     print(f"  Target         : {args.target}")
     print(f"  Mode           : {args.mode}")
+    if remote:
+        print(f"  Attacker VPS   : {args.attacker} (attacks via SSH)")
+        print(f"  Stats from     : local PC (never blocked)")
     print(f"  Reset victim   : {'YES (SSH restart)' if args.reset_victim else 'no'}")
     print(f"  Unblock victim : {'YES (auto_block mode)' if args.unblock_victim else 'no'}")
     print(f"  Time           : {datetime.now().strftime('%H:%M:%S')}")
@@ -774,11 +873,11 @@ def main():
 
     elif args.mode in ("quick", "all"):
         duration = args.duration or (10 if args.mode == "quick" else 30)
-        run_all(args.target, duration, args.api_port, save=args.save, **ssh_kwargs)
+        run_all(args.target, duration, args.api_port, save=args.save, remote=remote, **ssh_kwargs)
 
     elif args.mode == "full":
         duration = args.duration or 30
-        run_full(args.target, duration, args.api_port, save=args.save, **ssh_kwargs)
+        run_full(args.target, duration, args.api_port, save=args.save, remote=remote, **ssh_kwargs)
 
     else:
         duration = args.duration or 15
@@ -788,7 +887,7 @@ def main():
         if args.reset_victim:
             reset_victim_service(args.target, args.victim_user,
                                  args.victim_ssh_port, args.victim_key)
-        run_single(args.mode, args.target, duration)
+        run_single(args.mode, args.target, duration, remote)
         time.sleep(2)
         stats = fetch_stats(args.target, args.api_port)
         print_stats(stats, f"after {args.mode}")
