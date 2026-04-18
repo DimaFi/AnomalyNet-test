@@ -1,0 +1,457 @@
+{
+  "generated_at": "2026-04-14T17:29:53.461932",
+  "phases": [
+    {
+      "phase": "before_attacks",
+      "timestamp": "2026-04-14T17:24:55.509787",
+      "stats": {
+        "uptime_events_total": 570,
+        "events_by_label": {
+          "normal": 6,
+          "warning": 189,
+          "anomaly": 375
+        },
+        "events_by_protocol": {
+          "TCP": 539,
+          "UDP": 12,
+          "ICMP": 18,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 303,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 52,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 24,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11,
+          "109.248.33.97": 9
+        },
+        "top_dst_ports": {
+          "8000": 55,
+          "22": 46,
+          "10050": 38,
+          "0": 19,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3,
+          "20222": 3
+        },
+        "avg_score": 0.897,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_syn",
+      "attack": "syn",
+      "started_at": "2026-04-14T17:24:55.509787",
+      "finished_at": "2026-04-14T17:26:18.759461",
+      "stats": {
+        "uptime_events_total": 607,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 407
+        },
+        "events_by_protocol": {
+          "TCP": 572,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "193.233.91.180": 24,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "80": 25,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.8998,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_udp",
+      "attack": "udp",
+      "started_at": "2026-04-14T17:26:18.759461",
+      "finished_at": "2026-04-14T17:27:12.021606",
+      "stats": {
+        "uptime_events_total": 633,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 433
+        },
+        "events_by_protocol": {
+          "TCP": 598,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "193.233.91.180": 50,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "8000": 56,
+          "80": 51,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9033,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_icmp",
+      "attack": "icmp",
+      "started_at": "2026-04-14T17:27:12.021740",
+      "finished_at": "2026-04-14T17:28:13.236031",
+      "stats": {
+        "uptime_events_total": 664,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 464
+        },
+        "events_by_protocol": {
+          "TCP": 629,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "193.233.91.180": 81,
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "80": 82,
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9054,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_scan",
+      "attack": "scan",
+      "started_at": "2026-04-14T17:28:13.236031",
+      "finished_at": "2026-04-14T17:28:29.916946",
+      "stats": {
+        "uptime_events_total": 672,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 472
+        },
+        "events_by_protocol": {
+          "TCP": 637,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "193.233.91.180": 89,
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "80": 90,
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9072,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_http",
+      "attack": "http",
+      "started_at": "2026-04-14T17:28:29.916946",
+      "finished_at": "2026-04-14T17:29:10.808170",
+      "stats": {
+        "uptime_events_total": 692,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 492
+        },
+        "events_by_protocol": {
+          "TCP": 657,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "193.233.91.180": 109,
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "80": 110,
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9113,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_brute",
+      "attack": "brute",
+      "started_at": "2026-04-14T17:29:10.808170",
+      "finished_at": "2026-04-14T17:29:50.045048",
+      "stats": {
+        "uptime_events_total": 712,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 512
+        },
+        "events_by_protocol": {
+          "TCP": 677,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "193.233.91.180": 129,
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "80": 130,
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9149,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    },
+    {
+      "phase": "after_all_attacks",
+      "timestamp": "2026-04-14T17:29:53.461932",
+      "stats": {
+        "uptime_events_total": 714,
+        "events_by_label": {
+          "normal": 7,
+          "warning": 193,
+          "anomaly": 514
+        },
+        "events_by_protocol": {
+          "TCP": 679,
+          "UDP": 13,
+          "ICMP": 21,
+          "OTHER": 1
+        },
+        "events_by_attack_class": {
+          "Recon": 309,
+          "DDoS": 44,
+          "Bot": 3,
+          "DoS": 1,
+          "BruteForce": 12
+        },
+        "top_src_ips": {
+          "193.233.91.180": 131,
+          "45.142.193.166": 63,
+          "45.142.193.19": 62,
+          "45.142.193.20": 54,
+          "92.53.116.111": 38,
+          "109.248.33.126": 35,
+          "72.56.236.144": 25,
+          "80.66.66.70": 13,
+          "150.241.94.93": 13,
+          "109.248.33.42": 11
+        },
+        "top_dst_ports": {
+          "80": 132,
+          "8000": 56,
+          "22": 50,
+          "10050": 38,
+          "0": 22,
+          "443": 7,
+          "52222": 6,
+          "8443": 4,
+          "3389": 3,
+          "3306": 3
+        },
+        "avg_score": 0.9151,
+        "max_score": 0.9984,
+        "detection_mode": "advanced",
+        "active_model_id": "catboost-cascade-advanced",
+        "interface": "eth0",
+        "capture_status": "warning"
+      }
+    }
+  ]
+}

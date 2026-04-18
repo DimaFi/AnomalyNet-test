@@ -1,0 +1,87 @@
+[
+  {
+    "attack": "SYN Flood",
+    "expected_class": "DoS",
+    "total_new_events": 31,
+    "attacker_flows": 15,
+    "anomaly": 30,
+    "warning": 1,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 23,
+      "DoS": 1
+    },
+    "detection_ok": true,
+    "class_ok": true
+  },
+  {
+    "attack": "UDP Flood",
+    "expected_class": "DoS/DDoS",
+    "total_new_events": 16,
+    "attacker_flows": 16,
+    "anomaly": 16,
+    "warning": 0,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 16
+    },
+    "detection_ok": true,
+    "class_ok": false
+  },
+  {
+    "attack": "ICMP Flood",
+    "expected_class": "DoS",
+    "total_new_events": 18,
+    "attacker_flows": 18,
+    "anomaly": 18,
+    "warning": 0,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 18
+    },
+    "detection_ok": true,
+    "class_ok": false
+  },
+  {
+    "attack": "Port Scan",
+    "expected_class": "Recon",
+    "total_new_events": 18,
+    "attacker_flows": 18,
+    "anomaly": 18,
+    "warning": 0,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 18
+    },
+    "detection_ok": true,
+    "class_ok": true
+  },
+  {
+    "attack": "HTTP Flood",
+    "expected_class": "DoS/WebAttack",
+    "total_new_events": 40,
+    "attacker_flows": 40,
+    "anomaly": 40,
+    "warning": 0,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 40
+    },
+    "detection_ok": true,
+    "class_ok": false
+  },
+  {
+    "attack": "SSH BruteForce",
+    "expected_class": "BruteForce",
+    "total_new_events": 15,
+    "attacker_flows": 15,
+    "anomaly": 15,
+    "warning": 0,
+    "normal": 0,
+    "detected_classes": {
+      "Recon": 15
+    },
+    "detection_ok": true,
+    "class_ok": false
+  }
+]
